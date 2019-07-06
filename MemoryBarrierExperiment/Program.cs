@@ -5,32 +5,40 @@ namespace MemoryBarrierExperiment
 {
     internal static class Program
     {
-        private const int ExperimentCount = 1;
+        private const int ExperimentCount = 100;
 
         private static readonly object SyncRoot = new object();
 
-        private static readonly Barrier Barrier = new Barrier(2);
-        private static readonly SemaphoreSlim ValueSetLock = new SemaphoreSlim(1);
+        private static readonly Barrier
+            TaskStartBarrier = new Barrier(2, _ =>
+            {
+                _targetValue = false;
+
+                Thread.MemoryBarrier();
+            });
+
+        private static readonly Barrier TaskFinishBarrier = new Barrier(2);
+
+        private static readonly SemaphoreSlim ValueSetLock = new SemaphoreSlim(1, 1);
 
         private static int _countOfTrue;
         private static int _countOfFalse;
 
         private static bool _targetValue;
 
-
-        private static void Main(string[] args)
+        private static void Main()
         {
             var updateThread = new Thread(() =>
             {
-                for (int i = 0; i < ExperimentCount; i++)
+                for (var i = 0; i < ExperimentCount; i++)
                 {
                     UpdateValue();
                 }
             });
 
-            var readThread = new Thread(() =>
+             var readThread = new Thread(() =>
             {
-                for (int i = 0; i < ExperimentCount; i++)
+                for (var i = 0; i < ExperimentCount; i++)
                 {
                     ReadValue();
                 }
@@ -50,31 +58,16 @@ namespace MemoryBarrierExperiment
         private static void UpdateValue()
         {
             ValueSetLock.Wait();
-            Barrier.SignalAndWait();
-
-            _targetValue = false;
-
-            Thread.MemoryBarrier();
+            TaskStartBarrier.SignalAndWait();
 
             lock (SyncRoot)
             {
                 ValueSetLock.Release();
-
+                
                 _targetValue = true;
-            }
-        }
 
-        private static void ReadValue()
-        {
-            Thread.MemoryBarrier();
+                Monitor.Wait(SyncRoot);
 
-            Barrier.SignalAndWait();
-
-            ValueSetLock.Wait();
-            ValueSetLock.Release();
-
-            lock (SyncRoot)
-            {
                 if (_targetValue)
                 {
                     Interlocked.Increment(ref _countOfTrue);
@@ -84,6 +77,27 @@ namespace MemoryBarrierExperiment
                     Interlocked.Increment(ref _countOfFalse);
                 }
             }
+
+            TaskFinishBarrier.SignalAndWait();
+        }
+
+        private static void ReadValue()
+        {
+            TaskStartBarrier.SignalAndWait();
+
+            ValueSetLock.Wait();
+            ValueSetLock.Release();
+
+            lock (SyncRoot)
+            {
+                _targetValue = false;
+
+                Monitor.PulseAll(SyncRoot);
+
+                Thread.Sleep(10);
+            }
+
+            TaskFinishBarrier.SignalAndWait();
         }
     }
 }
